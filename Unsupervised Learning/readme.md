@@ -17,7 +17,7 @@ Welcome to my exploration of Unsupervised Learning, a branch of machine learning
       - [Anomaly Detection](#anomaly-detection)
       - [Overfitting and Underfitting](#overfitting-and-underfitting)
       - [Scalability and Efficiency](#scalability-and-efficiency)
-  - [\[Clustering\](/Unsupervised Learning/Clustering/readme.md)](#clusteringunsupervised-learningclusteringreadmemd)
+  - [\[Clustering\](Unsupervised Learning/Clustering/readme.md)](#clusteringunsupervised-learningclusteringreadmemd)
   - [Dimensionality Reduction](#dimensionality-reduction-1)
   - [Association Rules](#association-rules-1)
   - [Anomaly Detection](#anomaly-detection-1)
@@ -86,7 +86,7 @@ Understanding the key concepts of Unsupervised Learning is crucial for effective
 
 Understanding these key concepts will provide a solid foundation for exploring and applying various Unsupervised Learning techniques.
 
-## [Clustering](/Unsupervised Learning/Clustering/readme.md)
+## [Clustering](Unsupervised Learning/Clustering/readme.md)
 
 ## Dimensionality Reduction
 
