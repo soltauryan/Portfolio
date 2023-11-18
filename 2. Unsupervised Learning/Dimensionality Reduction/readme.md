@@ -89,6 +89,7 @@ Correlated original factors with linear relationships.
 ### Visuals
 
 Scree plot - A plot of the eigenvalues of the principal components, above 1 is considered significant.
+![1700271561365](image/readme/1700271561365.png)
 
 ### Metrics
 
