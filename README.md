@@ -4,14 +4,13 @@ As an aspiring Data Scientist, I thrive on turning complex data into actionable 
 
 ### How should you navigate my portfolio?
 
-My portfolio is split out by skill/technologies that are frequently used in data science. I provided some of my favorites below. Each folder has a markdown explaining my thoughts and important details on the topic within.
+My portfolio is split out by skill/technologies that are frequently used in data science. I provided some of my favorites below. Each folder has a markdown explaining pertinent information, links to related topics, and are my reference point for when I build these models.
 
-**Favorites:**
+**My Highlights:**
 
 * Pass
 * Pass
 * Pass
-
 
 ### 🔍 **What I Do:**
 
@@ -29,6 +28,6 @@ My portfolio is split out by skill/technologies that are frequently used in data
 
     Feel free to reach out to me for collaborations, opportunities, or just a chat about data science!
 
-| 📫 Email      | soltauryan@gmail.com                                                              |
-| ------------- | --------------------------------------------------------------------------------- |
+| 📫 Email           | soltauryan@gmail.com                                                              |
+| ------------------ | --------------------------------------------------------------------------------- |
 | **LinkedIn** | **[Ryan Soltau](https://www.linkedin.com/in/ryansoltau/ "Ryan Soltau LinkedIn")** |
