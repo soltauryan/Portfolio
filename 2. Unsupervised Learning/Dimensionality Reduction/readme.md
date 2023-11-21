@@ -2,23 +2,6 @@
 
 Reduce the number of inputs in predictive models by combining original variables that **are correlated with one another** into a smaller number of independent information-rich variables.
 
-## Table of Contents
-
-- [What is Dimensionality Reduction?](#what-is-dimensionality-reduction)
-  - [Table of Contents](#table-of-contents)
-  - [PCA vs Factor Analysis](#pca-vs-factor-analysis)
-    - [Principal Component Analysis (PCA):](#principal-component-analysis-pca)
-    - [Factor Analysis (FA):](#factor-analysis-fa)
-    - [When to Use PCA or FA:](#when-to-use-pca-or-fa)
-  - [Types of Business Questions Answered](#types-of-business-questions-answered)
-  - [Types of Data Input](#types-of-data-input)
-  - [Useful visuals and metrics](#useful-visuals-and-metrics)
-    - [Visuals](#visuals)
-    - [Metrics](#metrics)
-  - [Small Example](#small-example)
-    - [PCA](#pca)
-    - [Factor Analysis](#factor-analysis)
-
 ## PCA vs Factor Analysis
 
 **Principal Component Analysis (PCA) and Factor Analysis (FA)** are both techniques used for dimensionality reduction in data analysis, but they have different objectives and underlying assumptions. Understanding these differences is crucial for choosing the appropriate method for a given dataset or research question.
@@ -134,5 +117,23 @@ loadings
 ### Factor Analysis
 
 ```python
+from sklearn.datasets import load_iris
+from sklearn.decomposition import FactorAnalysis
+import pandas as pd
+
+# Load the iris dataset
+data = load_iris()
+X = data.data
+y = data.target
+
+# Create a FactorAnalysis model
+factor = FactorAnalysis(n_components=2)
+X_factor = factor.fit_transform(X)
+
+# Convert to a DataFrame for better visualization
+factor_df = pd.DataFrame(X_factor, columns=['Factor1', 'Factor2'])
+
+# Display the first few rows of the DataFrame
+factor_df.head()
 
 ```
