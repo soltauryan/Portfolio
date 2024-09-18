@@ -1,0 +1,1186 @@
+---
+title: "Analysis of Minnesota Vikings Subreddit"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+Vikings Fandom has character all it's own, formed by years of story
+lines, memes, and mostly pain that the fanbase has experienced together.
+This report delves into the vibrant and passionate conversations that
+unfold among Vikings fans annually, aiming to uncover the key themes and
+narratives that shape their community.
+
+-   What are Vikings fans talking about every year?
+-   What themes exist in every year of the data?
+-   What effect does the team’s record have on these discussions?
+
+Understanding these questions is not only interesting but essential for
+capturing the pulse of Vikings fandom. Each season's discourse reflects
+the collective sentiment, aspirations, and reactions of a dedicated fan
+base, providing a rich tapestry of social and cultural insights.
+Analyzing these themes helps us understand how sports influence
+community identity, emotional engagement, and social interactions.
+
+This research offers several key benefits. For sports sociologists, it
+contributes to the understanding of fan behavior and community dynamics.
+For the Vikings organization, it provides actionable insights into fan
+engagement, helping tailor communication and marketing strategies to
+resonate more deeply with their audience. Additionally, comparing these
+discussions with those of our divisional rivals adds a competitive
+dimension, highlighting the unique characteristics and commonalities
+within the NFC North.
+
+Our methodology involves several techniques. We employ LDA topic
+modeling to identify recurring themes in the comment and submission
+data. Using the transformer Python package, we analyze the emotions of
+4.5 million comments to gauge the overall sentiment within the
+community. Furthermore, we demonstrate a basic OpenAI chatbot that
+leverages trends and topics discussed by the community to respond to
+posts on the MN Vikings subreddit. This chatbot provides a practical
+application of our findings, illustrating how AI can engage with fan
+discussions dynamically.
+
+Through this study, we aim to enrich the understanding of sports fan
+communities, offering insights that extend beyond the realm of football.
+This research not only sheds light on the cultural fabric of Vikings
+fandom but also provides a model for analyzing fan engagement across
+different sports and regions.
+
+# **SKOL VIKES**
+
+# R libraries and load raw datasets
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(scales)
+library(lubridate)
+library(skimr)
+library(topicmodels)
+library(lsa)
+library(rvest)
+library(topicdoc)
+library(future)
+library(furrr)
+
+# Load datasets
+mn_vikes_posts_raw = read_csv("data/processed/minnesotavikings_submissions.csv")
+mn_vikes_comments_raw = read_csv("data/processed/minnesotavikings_comments.csv")
+mn_vikes_record_raw = read_csv("data/processed/vikings_records.csv")
+```
+
+# Functions
+
+```{r}
+# Function to remove outliers in a column
+remove_outliers <- function(df, column) {
+  Q1 <- quantile(df[[column]], 0.25)
+  Q3 <- quantile(df[[column]], 0.75)
+  IQR <- Q3 - Q1
+    
+  df_filtered <- df %>%
+    filter(df[[column]] >= (Q1 - 1.5 * IQR) & df[[column]] <= (Q3 + 1.5 * IQR))
+  
+  return(df_filtered)
+}
+
+
+# Function to add the Football season
+add_football_season <- function(df, start_month = 9) {
+  df <- df %>%
+    mutate(
+      # Parse the created column as date, handling potential parsing issues
+      created_date = ymd_hms(created, quiet = TRUE),
+      year = year(created_date),
+      month = month(created_date),
+      # Handle NA values in the created_date gracefully
+      season_start_year = if_else(!is.na(created_date) & month >= start_month, year, year - 1)
+    ) %>%
+    # Filter out rows with NA season_start_year
+    filter(!is.na(season_start_year)) %>%
+    mutate(
+      football_season = paste(season_start_year, season_start_year + 1, sep = "-")
+    ) %>%
+    select(-created_date, -year, -month)
+  
+  return(df)
+}
+```
+
+# Data Description
+
+This data was gathered from this
+[post](https://www.reddit.com/r/pushshift/comments/1akrhg3/separate_dump_files_for_the_top_40k_subreddits/).
+
+There are three datasets: - MN Vikings Subreddit Posts: Contains posts
+made on the Minnesota Vikings subreddit. - MN Vikings Subreddit
+Comments: Contains comments made on the Minnesota Vikings subreddit. -
+MN Vikings Records: Contains historical performance data of the
+Minnesota Vikings team.
+
+First lets cover the MN Vikings Subreddit Posts. We'll perform EDA once
+we've run through all three datasets.
+
+### MN Vikings Subreddit Posts dataset description
+
+##### Summary of `mn_vikes_posts` Columns
+
+-   **author**: The username of the Reddit user who posted the comment.
+-   **title**: The title of the post made by the user.
+-   **score**: The score of the post, which is the net upvotes minus
+    downvotes.
+-   **created**: The timestamp when the post was created.
+-   **link**: The URL link to the specific comment on Reddit.
+-   **text**: The text content of the post.
+-   **url**: The URL link to any external content referenced in the
+    post.
+
+```{r}
+head(mn_vikes_posts_raw)
+```
+
+```{r}
+skim(mn_vikes_posts_raw)
+```
+
+##### Summary of `mn_vikes_comments_raw` Columns
+
+-   **team_subreddit**: The subreddit where the comment was made.
+-   **author**: The username of the Reddit user who posted the comment.
+-   **score**: The score of the comment, which is the net upvotes minus
+    downvotes.
+-   **created**: The timestamp when the comment was created.
+-   **link**: The URL link to the specific comment on Reddit.
+-   **body**: The text content of the comment.
+
+```{r}
+head(mn_vikes_comments_raw)
+```
+
+Now lets use the built in summary function to view the dataset as well.
+
+The score/karma ranges from -499 to 5,245. The comment created date
+ranges from Jan 2011 to December 2023. **Note that the first season and
+last season are cut in half.**
+
+```{r}
+skim(mn_vikes_comments_raw)
+```
+
+Now lets do the same for the the vikings records dataset, which ranges
+from 1961 to 2023.
+
+##### Summary of `mn_vikes_record` Columns
+
+-   **Year**: The year the NFL season took place.
+-   **Lg**: The league in which the team played (e.g., NFL).
+-   **Tm**: The name of the team (Minnesota Vikings).
+-   **W**: The number of wins the team had in that season.
+-   **L**: The number of losses the team had in that season.
+-   **T**: The number of ties the team had in that season.
+-   **Div. Finish**: The team's finishing position within their
+    division.
+-   **Playoffs**: The playoff result for the team (e.g., Lost WC
+    (Wildcard), Lost Div (Divisional), Lost Conf (Conference), etc.).
+-   **PF (Points For)**: The total number of points the team scored in
+    that season.
+-   **PA (Points Against)**: The total number of points the team allowed
+    in that season.
+-   **PD (Point Differential)**: The difference between points scored
+    (PF) and points allowed (PA).
+-   **Coaches**: The head coach or coaches of the team during that
+    season.
+-   **AV (Approximate Value)**: An approximate value metric for player
+    performance.
+-   **Passer**: The main quarterback or passer for the team.
+-   **Rusher**: The main running back or rusher for the team.
+-   **Receiver**: The main wide receiver or receiver for the team.
+-   **Pts (Points)**: Offensive points scored by the team (can also
+    refer to top players' points).
+-   **Yds (Yards)**: Offensive yards gained by the team.
+-   **Pts (Points)**: Defensive points allowed by the team.
+-   **Yds (Yards)**: Defensive yards allowed by the team.
+-   **T/G (Turnovers/Game)**: Average turnovers per game by the team.
+-   **Pts± (Points Differential)**: Points differential metric.
+-   **Yds± (Yards Differential)**: Yards differential metric.
+-   **out of**: Total number of teams in the league/division.
+-   **MoV (Margin of Victory)**: Average margin of victory.
+-   **SoS (Strength of Schedule)**: Strength of schedule metric.
+-   **SRS (Simple Rating System)**: Combined rating of team performance
+    including offense and defense.
+-   **OSRS (Offensive SRS)**: Offensive Simple Rating System metric.
+-   **DSRS (Defensive SRS)**: Defensive Simple Rating System metric.
+
+```{r}
+head(mn_vikes_record_raw)
+```
+
+```{r}
+skim(mn_vikes_record_raw)
+```
+
+# EDA
+
+Prior to EDA, lets add some useful columns like the season the
+post/comment was posted under.
+
+```{r}
+# Create Prep datasets
+mn_vikes_posts_prep <- mn_vikes_posts_raw
+mn_vikes_comments_prep <- mn_vikes_comments_raw
+mn_vikes_record_prep <- mn_vikes_record_raw
+
+# Convert the 'created' column to datetime
+mn_vikes_posts_prep$created <- ymd_hms(mn_vikes_posts_prep$created)
+mn_vikes_comments_prep$created <- ymd_hms(mn_vikes_comments_prep$created)
+
+# Extract year and month for grouping
+mn_vikes_posts_prep <- mn_vikes_posts_prep %>%
+  mutate(year_month = floor_date(created, "month"))
+mn_vikes_comments_prep <- mn_vikes_comments_prep %>%
+  mutate(year_month = floor_date(created, "month"))
+
+# Add the football season
+mn_vikes_posts_prep <- add_football_season(mn_vikes_posts_prep, start_month=9)
+mn_vikes_comments_prep <- add_football_season(mn_vikes_comments_prep, start_month=9)
+
+# Remove rows with missing or invalid dates
+mn_vikes_posts_prep <- mn_vikes_posts_prep[!is.na(mn_vikes_posts_prep$created), ]
+mn_vikes_comments_prep <- mn_vikes_comments_prep[!is.na(mn_vikes_comments_prep$created), ]
+
+# Refresh stop words
+stop_words <- get_stopwords()
+
+# Create custom list of stop words to remove generic terms.
+stop_words_mn_vikes <- c("game", "football", "team", "vikings", "season", "year",
+                         "time", "qb", "play","just", "can", "one", "get", "like", "now", "fan",
+                         "week", "new", "today", "first", "last", "think", "anyone", "vs",
+                         "us", "bank", "going", "next", "got", "know", "it's","see", "much",
+                         "back", "well", "right", "also", "make", "bad", "way","really",
+                         "still", "deleted", "take", "https", "guys", "go", "day", "games",
+                         "good", "better", "need", "want", "lol", "say", "every")
+
+# Create tidy dataset and remove stop words, custom stop words, and numbers and digits.
+mn_vikes_posts_tidy <- mn_vikes_posts_prep %>% 
+  unnest_tokens(input = title,
+                output = word) %>% 
+  anti_join(stop_words) %>%
+  filter(!word %in% stop_words_mn_vikes) %>%
+  filter(!grepl("^[-+]?\\s*(\\d+[.,])?\\d*(\\.[0-9]+)?([eEs][+-]?\\d+)?\\s*$", trimws(word)))
+
+
+
+# Create tidy dataset and remove stop words, custom stop words, and numbers and digits.
+mn_vikes_comments_tidy <- mn_vikes_comments_prep %>% 
+  unnest_tokens(input = body,
+                output = word) %>% 
+  anti_join(stop_words) %>%
+  filter(!word %in% stop_words_mn_vikes) %>%
+  filter(!grepl("^[-+]?\\s*(\\d+[.,])?\\d*(\\.[0-9]+)?([eEs][+-]?\\d+)?\\s*$", trimws(word)))
+
+```
+
+### For both our Posts and Comments, what's the volume of examples that we're working with?
+
+It's worth remembering their are partial seasons in both datasets. -
+Posts: November 2008 to December 2023 - Comments: January 2011 to
+December 2023
+
+##### Posts
+
+```{r}
+# Group by year_month to get the count of comments and average score
+time_series_post_df <- mn_vikes_posts_prep %>%
+  group_by(season_start_year) %>%
+  summarise(
+    post_count = n(),
+    average_score = mean(score, na.rm = TRUE)
+  )
+
+# Plotting the results
+ggplot(time_series_post_df, aes(x = season_start_year)) +
+  geom_line(aes(y = post_count, color = "Post Count")) +
+  labs(
+    title = "Minnesota Vikings Subreddit: Number of Posts",
+    x = "Season Start Year",
+    y = "Post Count"
+  ) +
+  theme_minimal() +
+  scale_color_manual(
+    name = "Legend",
+    values = c("Post Count" = "blue")
+  ) +
+  scale_y_continuous(labels = comma)
+```
+
+2017, a year when the Vikings had a great record (13-3) and made it to the NFC Championship, is the peak. This season include Case Keenum's throw to [Diggs, Sideline, Touchdown](https://www.youtube.com/watch?v=dzRRi2QcSEM) to beat the Saints walk-off style, arguably the greatest Vikings moment in recent memory. In true Vikings fashion, they let us down in the next game versus the Eagles, to this day I have not re watched it. It was an emotional high to a hopeless loss.
+
+The subreddit hasn't reached that peak again, even in 2022 when we had a similar record of (13-4). In that year we were regarded as fraudulent, and our first-round exit against the Daniel Jones led Giants didn't help that narrative.
+
+Note that this activity differs from the number of comments, which have been generally trending upwards since the subreddit's creation.
+
+##### Comments:
+
+```{r}
+# Group by year_month to get the count of comments and average score
+time_series_comments_df <- mn_vikes_comments_prep %>%
+  group_by(season_start_year) %>%
+  summarise(
+    comment_count = n(),
+    average_score = mean(score, na.rm = TRUE)
+  )
+
+# Plotting the results
+ggplot(time_series_comments_df, aes(x = season_start_year)) +
+  geom_line(aes(y = comment_count, color = "Comment Count")) +
+  scale_y_continuous(
+    name = "Count/Score",
+    sec.axis = sec_axis(~., name = "Average Score")
+  ) +
+  labs(
+    title = "Minnesota Vikings Subreddit: Number of Comments",
+    x = "Season Start Year"
+  ) +
+  theme_minimal() +
+  scale_color_manual(
+    name = "Metric",
+    values = c("Comment Count" = "blue")
+  ) +
+  scale_y_continuous(labels = comma)
+```
+The subreddit comments show a more general growth trend compared to posts. As a reminder, the 2024 year contains ~1/2 a season's worth of data. 2017 does show a peak in this growth, but it pales in comparison to the 2022 and 2023 years. This graph reflects the overall growth of the subreddit and the growth of reddit's userbase.
+
+
+### Next I'm curious about the score's of the posts and comments.  
+Is there a significant amount of posts and comments with positive karma that we can learn from? Given the descriptive statistics of the points in the skim outputs above, lets remove outliers from both.
+
+##### Posts
+```{r}
+# Histogram of a numerical column
+mn_vikes_posts_prep %>% 
+  remove_outliers("score") %>% 
+  ggplot(aes(x = score)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Histogram of Post Scores",
+       x = "Score",
+       y = "Frequency") +
+  scale_y_continuous(labels = comma)
+
+```
+This graph shows the right-skewed distribution of the post scores. This means that posts with negative scores tend to have a large interaction drop off, while positive scores show more engagement overall.
+
+##### Comments
+```{r}
+# Histogram of a numerical column
+mn_vikes_comments_prep %>% 
+  remove_outliers("score") %>% 
+  ggplot(aes(x = score)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Histogram of Comment Scores",
+       x = "Score",
+       y = "Frequency") +
+  scale_y_continuous(labels = comma)
+
+```
+The comment's scores are normally distributed with a peak at one. Reddit comments start with a score of one, so this is telling us that most comments don't receive any upvotes or downvotes. 
+
+### Next lets take a quick look at the most popular words in the Posts and Comments.
+
+```{r}
+mn_vikes_post_dist <- mn_vikes_posts_tidy %>% 
+  select(word) %>% 
+  group_by(word) %>% 
+  summarize(n = n())
+
+# There are a ton of words that are just numbers or variations of numbers (e.g., 0,0,0,0,0,0,0), so this gets rid of most of them.
+mn_vikes_post_dist %>% 
+  top_n(n=20, wt=n) %>% 
+  ggplot(aes(x=reorder(word, n), y=n)) +
+  geom_col() +
+  scale_x_discrete(limits = rev) +
+  labs(title="Count of words in MN Vikings subreddit posts",
+       x="Word",
+       y="Count of Word") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = comma)
+```
+Here we see a few common football terms, players, and coaches make up the majority of the terms used in the subreddit.
+
+```{r}
+mn_vikes_comments_dist <- mn_vikes_comments_tidy %>% 
+  select(word) %>% 
+  group_by(word) %>% 
+  summarize(n = n())
+
+# There are a ton of words that are just numbers or variations of numbers (e.g., 0,0,0,0,0,0,0), so this gets rid of most of them.
+mn_vikes_comments_dist %>% 
+  top_n(n=20, wt=n) %>% 
+  ggplot(aes(x=reorder(word, n), y=n)) +
+  geom_col() +
+  scale_x_discrete(limits = rev) +
+  labs(title="Count of words in MN Vikings subreddit comments",
+       x="Word",
+       y="Count of Word") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = comma)
+
+
+
+```
+The comments are less focused on the team's players, with more discussion about the performance of the team.
+
+## Data Analysis
+
+Lets first take a look at the sentiment of posts and comments by season start year. 
+
+```{r}
+# Taking a look at the 
+mn_vikes_sentiment <- mn_vikes_posts_tidy %>% 
+  select(season_start_year, word) %>% 
+  inner_join(get_sentiments(),
+             relationship = "many-to-many") %>% 
+  group_by(season_start_year, sentiment) %>% 
+  summarize(n = n()) %>% 
+  filter(season_start_year != 2011)
+
+mn_vikes_sentiment %>% 
+  ggplot(aes(x=season_start_year, y=n, fill=sentiment)) +
+  geom_col(position="dodge") + 
+  labs(title="Subreddit Posts: Positive vs. Negative Sentiment per Year",
+       x="Year",
+       y="Count of Word Sentiments",
+       fill="Sentiment Type") +
+  scale_y_continuous(labels = comma)
+```
+
+For Posts, positive sentiments outweigh negative sentiments in every single season. This makes intuitive sense to me sense fan bases tend to have an overly optimistic view of their own team. You can see the massive jumps in positive sentiment to negative sentiment in 2017 and 2023 when the team had 13 wins.
+
+```{r}
+# Taking a look at the 
+mn_vikes_sentiment_comments <- mn_vikes_comments_tidy %>% 
+  select(season_start_year, word) %>% 
+  inner_join(get_sentiments(),
+             relationship = "many-to-many") %>% 
+  group_by(season_start_year, sentiment) %>% 
+  summarize(n = n()) %>% 
+  filter(season_start_year != 2011)
+
+mn_vikes_sentiment_comments %>% 
+  ggplot(aes(x=season_start_year, y=n, fill=sentiment)) +
+  geom_col(position="dodge") + 
+  labs(title="Subreddit Comments: Positive vs. Negative Sentiment per Year",
+       x="Year",
+       y="Count of Word Sentiments",
+       fill="Sentiment Type") +
+  scale_y_continuous(labels = comma)
+```
+
+Comments seems to be much closer in sentiment that posts. This could be a reflection of how positive post titles are typically encouraged by the community (via score) whereas the discussion itself can be more nuanced.
+
+
+```{r}
+mn_vikes_posts_tf_idf <- mn_vikes_posts_tidy %>% 
+  count(season_start_year, word) %>% 
+  filter(season_start_year != 2011) %>% # 2011 only has one comment and is therefore not very interesting
+  bind_tf_idf(term = word,
+              document = season_start_year,
+              n=n) %>% 
+  group_by(season_start_year) %>% 
+  top_n(n=10,
+        wt = tf_idf) %>% 
+  filter(between(season_start_year, 2020, 2023))
+
+mn_vikes_posts_tf_idf %>% 
+  ggplot() +
+  geom_col(aes(x = reorder(word,tf_idf),
+               y = tf_idf)) +
+  facet_wrap(~season_start_year,
+            scales = "free") +
+  labs(title="tf_idf for posts in MN Vikings subreddit",
+       x="Word",
+       y="tf_idf") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = comma)
+```
+
+Overall the posts are dominated by the players, coaches, and GMs that season. With the season determining which players, coaches, and GMs are being discussed. 
+
+```{r}
+mn_vikes_comments_tf_idf <- mn_vikes_comments_tidy %>% 
+  count(season_start_year, word) %>% 
+  filter(season_start_year != 2011) %>% # 2011 only has one comment and is therefore not very interesting
+  bind_tf_idf(term = word,
+              document = season_start_year,
+              n=n) %>% 
+  group_by(season_start_year) %>% 
+  top_n(n=10,
+        wt = tf_idf) %>% 
+  filter(between(season_start_year, 2020, 2023))
+
+mn_vikes_comments_tf_idf %>% 
+  ggplot() +
+  geom_col(aes(x = reorder(word,tf_idf),
+               y = tf_idf)) +
+  facet_wrap(~season_start_year,
+            scales = "free") +
+  labs(title="tf_idf for comments in MN Vikings subreddit",
+       x="Word",
+       y="tf_idf") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = comma)
+```
+We see a very similar pattern in the comments.
+
+Now lets look at the beta values for the posts.
+
+My initial thought of using 13 for the 13 years of Vikings football in the data, but this turned out to create too many repetitive topics. After iterating with a few topic counts I settled on 5. 
+
+```{r}
+# Get count of words in posts
+post_word_count <-  mn_vikes_posts_tidy %>%
+   anti_join(stop_words) %>% #remove stop words
+  count(season_start_year,word,sort=T)
+
+# Create Posts DTM
+posts_dtm <- post_word_count %>%
+  cast_dtm(document = season_start_year, 
+           term = word, 
+           value = n)
+
+# Start LDA Analysis
+posts_lda <- LDA(posts_dtm, k = 4, 
+                    control = list(seed = 1234))
+
+# Grab the topic-word probabilities
+chapter_topics <- tidy(posts_lda,
+                       matrix = "beta")
+
+# Grab the top words from each topic
+top_post_terms <- chapter_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 8) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+
+# View the results
+top_post_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(x = beta, y = term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~topic  , scales = "free" ) +
+  scale_y_reordered()
+
+
+
+```
+
+Again we're seeing a repeat of the previous analyses where it's commonly topics that are centered around the players, coaches, and GMs. What's interesting is that some "eras" of Vikings football are starting to appear. From the 2000s with players like Adrian Peterson and Christian Ponder to more modern players like Kirk, Case Keenum, and Diggs.
+
+Now lets do the same for the comments.
+
+```{r}
+# Get count of words in posts
+comment_word_count <-  mn_vikes_comments_tidy %>%
+   anti_join(stop_words) %>% #remove stop words
+  count(season_start_year,word,sort=T)
+
+# Create Posts DTM
+comments_dtm <- comment_word_count %>%
+  cast_dtm(document = season_start_year, 
+           term = word, 
+           value = n)
+
+# Start LDA Analysis
+comments_lda <- LDA(comments_dtm, k = 4, 
+                    control = list(seed = 1234))
+
+# Grab the topic-word probabilities
+comment_topics <- tidy(comments_lda,
+                       matrix = "beta")
+
+# Grab the top words from each topic
+top_comment_terms <- comment_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 8) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+
+# View the results
+top_comment_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(x = beta, y = term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~topic  , scales = "free" ) +
+  scale_y_reordered()
+```
+
+
+```{r}
+tune <- 1
+
+if (tune == 1) {
+  k_vals <- seq(3, 75, by = 3)
+  coherence <- list()
+  for (k in k_vals) {
+    lda <- LDA(posts_dtm, k = k, control = list(seed = 1234))
+    coherence_score <- mean(topic_coherence(lda, posts_dtm))
+    coherence <- append(coherence, coherence_score)
+  }
+}
+
+if (tune == 1) {
+  coherence <- unlist(coherence)
+  coherence_tib <- tibble(k = k_vals, coherence = coherence)
+  coherence_tib %>%
+    ggplot(aes(x = k, y = coherence)) +
+    geom_line(color = 'blue4', size = 2) +
+    geom_point(color = 'blue4', size = 5) +
+    ggtitle('MN Vikes Topic Coherence', subtitle = 'Optimal = minimum') +
+    xlab('Number of Topics') +
+    ylab('Coherence') +
+    theme_light()
+}
+```
+
+
+
+
+We see a similar trend with the comments as well.
+
+
+# Conclusion
+Overall, it was challenging to identify consistent themes in the discussions among Vikings fans over the years. The discourse is predominantly centered around players, coaches, and general managers, which logically aligns with their direct impact on the outcomes of games. For the next phase of this analysis, I propose three approaches to delve deeper into the data:
+
+- **Refine the Analysis by Removing Common Entities**: The first approach would involve enhancing the stop words list to include names of players, coaches, and general managers. This would help uncover underlying themes and discussions that are overshadowed by the frequent mentions of these key figures.
+
+- **Focus on Player-Specific Discussions**: The second approach would involve isolating comments and posts that mention specific players. By examining the context and nature of discussions around each player, we can gain insights into fan perceptions, sentiments, and the impact of individual players on fan engagement.
+
+- **Analyze Game-Specific Threads**: The third approach would focus on discussions related to individual games. By incorporating data such as win probability, game statistics, and critical moments, we can analyze how game outcomes and in-game events influence fan discussions and sentiments.
+
+This exercise has been a highly enjoyable dive into a community I have been part of my entire life. It has provided valuable insights into the complexities and challenges of analyzing a large corpus of text data. Through these proposed next steps, we can aim to uncover deeper insights and more nuanced understanding of the discussions among Vikings fans.
+
+Engaging in this analysis has not only deepened my appreciation for the community but also highlighted the intricacies involved in text analysis. The dynamic and multifaceted nature of fan discussions poses unique challenges, yet also offers a rich landscape for exploration. Through continued refinement and targeted analyses, we can aim to uncover more meaningful insights and contribute to a greater understanding of the community's discourse.
+
+
+# Citation
+
+Data prior to April 2023 was collected by Pushshift, data after that was collected by u/raiderbdev [here](https://www.reddit.com/user/raiderbdev). Extracted, split, and re-packaged by me, u/Watchful1. Hosted on [academictorrents.com](https://academictorrents.com).
+
+---
+title: "Analysis of Minnesota Vikings Subreddit"
+output: html_notebook
+---
+
+# Introduction
+
+Vikings Fandom has character all it's own, formed by years of story
+lines, memes, and mostly pain that the fanbase has experienced together.
+This report delves into the vibrant and passionate conversations that
+unfold among Vikings fans annually, aiming to uncover the key themes and
+narratives that shape their community.
+
+-   What are Vikings fans talking about every year?
+-   What themes exist in every year of the data?
+-   What effect does the team’s record have on these discussions?
+
+Understanding these questions is not only interesting but essential for
+capturing the pulse of Vikings fandom. Each season's discourse reflects
+the collective sentiment, aspirations, and reactions of a dedicated fan
+base, providing a rich tapestry of social and cultural insights.
+Analyzing these themes helps us understand how sports influence
+community identity, emotional engagement, and social interactions.
+
+This research offers several key benefits. For sports sociologists, it
+contributes to the understanding of fan behavior and community dynamics.
+For the Vikings organization, it provides actionable insights into fan
+engagement, helping tailor communication and marketing strategies to
+resonate more deeply with their audience. Additionally, comparing these
+discussions with those of our divisional rivals adds a competitive
+dimension, highlighting the unique characteristics and commonalities
+within the NFC North.
+
+Our methodology involves several techniques. We employ LDA topic
+modeling to identify recurring themes in the comment and submission
+data. Using the transformer Python package, we analyze the emotions of
+4.5 million comments to gauge the overall sentiment within the
+community. Furthermore, we demonstrate a basic OpenAI chatbot that
+leverages trends and topics discussed by the community to respond to
+posts on the MN Vikings subreddit. This chatbot provides a practical
+application of our findings, illustrating how AI can engage with fan
+discussions dynamically.
+
+Through this study, we aim to enrich the understanding of sports fan
+communities, offering insights that extend beyond the realm of football.
+This research not only sheds light on the cultural fabric of Vikings
+fandom but also provides a model for analyzing fan engagement across
+different sports and regions.
+
+# **SKOL VIKES**
+
+# R libraries and load raw datasets
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(scales)
+library(lubridate)
+library(skimr)
+
+# Load datasets
+mn_vikes_posts_raw = read_csv("data/processed/minnesotavikings_submissions.csv")
+mn_vikes_comments_raw = read_csv("data/processed/minnesotavikings_comments.csv")
+mn_vikes_record_raw = read_csv("data/processed/vikings_records.csv")
+```
+
+# Functions
+
+```{r}
+# Function to remove outliers in a column
+remove_outliers <- function(df, column) {
+  Q1 <- quantile(df[[column]], 0.25)
+  Q3 <- quantile(df[[column]], 0.75)
+  IQR <- Q3 - Q1
+    
+  df_filtered <- df %>%
+    filter(df[[column]] >= (Q1 - 1.5 * IQR) & df[[column]] <= (Q3 + 1.5 * IQR))
+  
+  return(df_filtered)
+}
+
+
+# Function to add the Football season
+add_football_season <- function(df, start_month = 9) {
+  df <- df %>%
+    mutate(
+      # Parse the created column as date, handling potential parsing issues
+      created_date = ymd_hms(created, quiet = TRUE),
+      year = year(created_date),
+      month = month(created_date),
+      # Handle NA values in the created_date gracefully
+      season_start_year = if_else(!is.na(created_date) & month >= start_month, year, year - 1)
+    ) %>%
+    # Filter out rows with NA season_start_year
+    filter(!is.na(season_start_year)) %>%
+    mutate(
+      football_season = paste(season_start_year, season_start_year + 1, sep = "-")
+    ) %>%
+    select(-created_date, -year, -month)
+  
+  return(df)
+}
+```
+
+# Data Description
+
+### You clearly describe your dataset. Where did you gather the data? What variables are contained in the data? What are some basic summary statistics? You perform a concise but useful exploratory data analysis.
+
+This data was gathered from this
+[post](https://www.reddit.com/r/pushshift/comments/1akrhg3/separate_dump_files_for_the_top_40k_subreddits/).
+
+There are three datasets: - MN Vikings Subreddit Posts: Contains posts
+made on the Minnesota Vikings subreddit. - MN Vikings Subreddit
+Comments: Contains comments made on the Minnesota Vikings subreddit. -
+MN Vikings Records: Contains historical performance data of the
+Minnesota Vikings team.
+
+First lets cover the MN Vikings Subreddit Posts. We'll perform EDA once
+we've run through all three datasets.
+
+### MN Vikings Subreddit Posts dataset description
+
+##### Summary of `mn_vikes_posts` Columns
+
+-   **author**: The username of the Reddit user who posted the comment.
+-   **title**: The title of the post made by the user.
+-   **score**: The score of the post, which is the net upvotes minus
+    downvotes.
+-   **created**: The timestamp when the post was created.
+-   **link**: The URL link to the specific comment on Reddit.
+-   **text**: The text content of the post.
+-   **url**: The URL link to any external content referenced in the
+    post.
+
+```{r}
+head(mn_vikes_posts_raw)
+```
+
+```{r}
+skim(mn_vikes_posts_raw)
+```
+
+##### Summary of `mn_vikes_comments_raw` Columns
+
+-   **team_subreddit**: The subreddit where the comment was made.
+-   **author**: The username of the Reddit user who posted the comment.
+-   **score**: The score of the comment, which is the net upvotes minus
+    downvotes.
+-   **created**: The timestamp when the comment was created.
+-   **link**: The URL link to the specific comment on Reddit.
+-   **body**: The text content of the comment.
+
+```{r}
+head(mn_vikes_comments_raw)
+```
+
+Now lets use the built in summary function to view the dataset as well.
+
+The score/karma ranges from -499 to 5,245. The comment created date
+ranges from Jan 2011 to December 2023. **Note that the first season and
+last season are cut in half.**
+
+```{r}
+skim(mn_vikes_comments_raw)
+```
+
+Now lets do the same for the the vikings records dataset, which ranges
+from 1961 to 2023.
+
+##### Summary of `mn_vikes_record` Columns
+
+-   **Year**: The year the NFL season took place.
+-   **Lg**: The league in which the team played (e.g., NFL).
+-   **Tm**: The name of the team (Minnesota Vikings).
+-   **W**: The number of wins the team had in that season.
+-   **L**: The number of losses the team had in that season.
+-   **T**: The number of ties the team had in that season.
+-   **Div. Finish**: The team's finishing position within their
+    division.
+-   **Playoffs**: The playoff result for the team (e.g., Lost WC
+    (Wildcard), Lost Div (Divisional), Lost Conf (Conference), etc.).
+-   **PF (Points For)**: The total number of points the team scored in
+    that season.
+-   **PA (Points Against)**: The total number of points the team allowed
+    in that season.
+-   **PD (Point Differential)**: The difference between points scored
+    (PF) and points allowed (PA).
+-   **Coaches**: The head coach or coaches of the team during that
+    season.
+-   **AV (Approximate Value)**: An approximate value metric for player
+    performance.
+-   **Passer**: The main quarterback or passer for the team.
+-   **Rusher**: The main running back or rusher for the team.
+-   **Receiver**: The main wide receiver or receiver for the team.
+-   **Pts (Points)**: Offensive points scored by the team (can also
+    refer to top players' points).
+-   **Yds (Yards)**: Offensive yards gained by the team.
+-   **Pts (Points)**: Defensive points allowed by the team.
+-   **Yds (Yards)**: Defensive yards allowed by the team.
+-   **T/G (Turnovers/Game)**: Average turnovers per game by the team.
+-   **Pts± (Points Differential)**: Points differential metric.
+-   **Yds± (Yards Differential)**: Yards differential metric.
+-   **out of**: Total number of teams in the league/division.
+-   **MoV (Margin of Victory)**: Average margin of victory.
+-   **SoS (Strength of Schedule)**: Strength of schedule metric.
+-   **SRS (Simple Rating System)**: Combined rating of team performance
+    including offense and defense.
+-   **OSRS (Offensive SRS)**: Offensive Simple Rating System metric.
+-   **DSRS (Defensive SRS)**: Defensive Simple Rating System metric.
+
+```{r}
+head(mn_vikes_record_raw)
+```
+
+```{r}
+skim(mn_vikes_record_raw)
+```
+
+# EDA
+
+Prior to EDA, lets add some useful columns like the season the
+post/comment was posted under.
+
+```{r}
+# Create Prep datasets
+mn_vikes_posts_prep <- mn_vikes_posts_raw
+mn_vikes_comments_prep <- mn_vikes_comments_raw
+mn_vikes_record_prep <- mn_vikes_record_raw
+
+# Convert the 'created' column to datetime
+mn_vikes_posts_prep$created <- ymd_hms(mn_vikes_posts_prep$created)
+mn_vikes_comments_prep$created <- ymd_hms(mn_vikes_comments_prep$created)
+
+# Extract year and month for grouping
+mn_vikes_posts_prep <- mn_vikes_posts_prep %>%
+  mutate(year_month = floor_date(created, "month"))
+mn_vikes_comments_prep <- mn_vikes_comments_prep %>%
+  mutate(year_month = floor_date(created, "month"))
+
+# Add the football season
+mn_vikes_posts_prep <- add_football_season(mn_vikes_posts_prep, start_month=9)
+mn_vikes_comments_prep <- add_football_season(mn_vikes_comments_prep, start_month=9)
+```
+
+### For both our Posts and Comments, what's the volume of examples that
+we're working with?
+
+It's worth remembering their are partial seasons in both datasets. -
+Posts: November 2008 to December 2023 - Comments: January 2011 to
+December 2023
+
+##### Posts
+
+```{r}
+# Group by year_month to get the count of comments and average score
+time_series_post_df <- mn_vikes_posts_prep %>%
+  group_by(season_start_year) %>%
+  summarise(
+    post_count = n(),
+    average_score = mean(score, na.rm = TRUE)
+  )
+
+# Plotting the results
+ggplot(time_series_post_df, aes(x = season_start_year)) +
+  geom_line(aes(y = post_count, color = "Post Count")) +
+  labs(
+    title = "Minnesota Vikings Subreddit: Number of Posts",
+    x = "Season Start Year",
+    y = "Post Count"
+  ) +
+  theme_minimal() +
+  scale_color_manual(
+    name = "Legend",
+    values = c("Post Count" = "blue")
+  ) +
+  scale_y_continuous(labels = comma)
+```
+
+2017, a year when the Vikings had a great record (13-3) and made it to the NFC Championship, is the peak. This season include Case Keenum's throw to [Diggs, Sideline, Touchdown](https://www.youtube.com/watch?v=dzRRi2QcSEM) to beat the Saints walk-off style, arguably the greatest Vikings moment in recent memory. In true Vikings fashion, they let us down in the next game versus the Eagles, to this day I have not re watched it. It was an emotional high to a hopeless loss.
+
+The subreddit hasn't reached that peak again, even in 2022 when we had a similar record of (13-4). In that year we were regarded as fraudulent, and our first-round exit against the Daniel Jones led Giants didn't help that narrative.
+
+Note that this activity differs from the number of comments, which have been generally trending upwards since the subreddit's creation.
+
+##### Comments:
+
+```{r}
+# Group by year_month to get the count of comments and average score
+time_series_comments_df <- mn_vikes_comments_prep %>%
+  group_by(season_start_year) %>%
+  summarise(
+    comment_count = n(),
+    average_score = mean(score, na.rm = TRUE)
+  )
+
+# Plotting the results
+ggplot(time_series_comments_df, aes(x = season_start_year)) +
+  geom_line(aes(y = comment_count, color = "Comment Count")) +
+  scale_y_continuous(
+    name = "Count/Score",
+    sec.axis = sec_axis(~., name = "Average Score")
+  ) +
+  labs(
+    title = "Minnesota Vikings Subreddit: Number of Comments",
+    x = "Season Start Year"
+  ) +
+  theme_minimal() +
+  scale_color_manual(
+    name = "Metric",
+    values = c("Comment Count" = "blue")
+  ) +
+  scale_y_continuous(labels = comma)
+```
+
+### Next I'm curious about the score's of the posts and comments.  
+Is there a significant amount of posts and comments with positive karma that we can learn from? Given the descriptive statistics of the points in the summary outputs above, lets remove outliers.
+
+##### Posts
+```{r}
+# Histogram of a numerical column
+mn_vikes_posts_prep %>% 
+  remove_outliers("score") %>% 
+  ggplot(aes(x = score)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Histogram of Post Scores",
+       x = "Score",
+       y = "Frequency") +
+  scale_y_continuous(labels = comma)
+
+```
+This graph shows the right-skewed distribution of the post scores. 
+
+##### Comments
+```{r}
+# Histogram of a numerical column
+mn_vikes_comments_prep %>% 
+  remove_outliers("score") %>% 
+  ggplot(aes(x = score)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Histogram of Comment Scores",
+       x = "Score",
+       y = "Frequency") +
+  scale_y_continuous(labels = comma)
+
+```
+The comment's scores are normally distributed with a peak at one. Reddit comments start with a score of one, so this is telling us that most comments don't receive any upvotes or downvotes. 
+
+## Data Analysis
+
+### You carry out at least 2 distinct text-mining analyses to answer your question(s) of interest. The code is clearly described and necessary. You clearly discuss each step of the analysis, and why you are running it. You have accompanying plots which make sense and are interpreted.
+
+### Create tidy data
+
+```{r}
+# Create custom list of stop words to remove generic terms.
+stop_words_mn_vikes <- c("game", "football", "team", "vikings", "season", "year", "time", "qb", "play")
+
+# Create tidy dataset and remove stop words, custom stop words, and numbers and digits.
+mn_vikes_tidy <- mn_vikes_comments_prep %>% 
+  unnest_tokens(input = body,
+                output = word) %>% 
+  anti_join(stop_words) %>%
+  filter(!word %in% stop_words_mn_vikes) %>%
+  filter(!grepl("^[-+]?\\s*(\\d+[.,])?\\d*(\\.[0-9]+)?([eEs][+-]?\\d+)?\\s*$", trimws(word)))
+
+```
+
+
+
+
+```{r}
+# Taking a look at the 
+mn_vikes_q1 <- mn_vikes_tidy %>% 
+  select(season_start_year, word) %>% 
+  inner_join(get_sentiments(),
+             relationship = "many-to-many") %>% 
+  group_by(season_start_year, sentiment) %>% 
+  summarize(n = n()) %>% 
+  filter(season_start_year != 2011)
+
+mn_vikes_q1 %>% 
+  ggplot(aes(x=season_start_year, y=n, fill=sentiment)) +
+  geom_col(position="dodge") + 
+  labs(title="Positive vs. Negative Sentiment per Year",
+       x="Year",
+       y="Count of Word Sentiments",
+       fill="Sentiment Type")
+```
+
+```{r}
+mn_vikes_q2 <- mn_vikes_tidy %>% 
+  select(word) %>% 
+  group_by(word) %>% 
+  summarize(n = n())
+
+# There are a ton of words that are just numbers or variations of numbers (e.g., 0,0,0,0,0,0,0), so this gets rid of most of them.
+mn_vikes_q2 %>% 
+  top_n(n=20, wt=n) %>% 
+  ggplot(aes(x=reorder(word, n), y=n)) +
+  geom_col() +
+  scale_x_discrete(limits = rev) +
+  labs(title="Count of word in MN Vikings subreddit",
+       x="Word",
+       y="Count of Word") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+# Check the structure of the mn_vikes_tidy dataset
+str(mn_vikes_tidy)
+
+# Display the first few rows of the dataset
+head(mn_vikes_tidy)
+```
+
+
+
+```{r}
+# Filter for the last 6 years
+last_6_years <- max(mn_vikes_tidy$season_start_year, na.rm = TRUE) - 5
+print(paste("Filtering data for season_start_year >=", last_6_years))
+
+# Check if the filter is correct
+filtered_data <- mn_vikes_tidy %>%
+  filter(season_start_year >= last_6_years)
+print("Number of rows after filtering for last 6 years:")
+print(nrow(filtered_data))
+
+# Check the top few rows of filtered data
+print(head(filtered_data))
+
+# Proceed if there is data
+if(nrow(filtered_data) > 0) {
+  mn_vikes_q2 <- filtered_data %>%
+    select(word) %>%
+    group_by(word) %>%
+    summarize(n = n())
+
+  # List of stop words to remove
+  stop_words <- c("game", "football", "team", "vikings", "season", "year")
+
+  # Filter out stop words and numbers
+  mn_vikes_q2 <- mn_vikes_q2 %>%
+    filter(!word %in% stop_words) %>%
+    filter(!grepl("^[-+]?\\s*(\\d+[.,])?\\d*(\\.[0-9]+)?([eEs][+-]?\\d+)?\\s*$", trimws(word)))
+
+  # Check the resulting word counts
+  print("Word counts after filtering stop words and numbers:")
+  print(head(mn_vikes_q2))
+
+  # Select top 5 words
+  top_words <- mn_vikes_q2 %>%
+    arrange(desc(n)) %>%
+    head(5)
+
+  # Check the top_words data frame
+  print("Top 5 words:")
+  print(top_words)
+
+  # Plot
+  ggplot(top_words, aes(x = reorder(word, n), y = n)) +
+    geom_col() +
+    scale_x_discrete(limits = rev(levels(factor(top_words$word)))) +
+    labs(
+      title = "Count of top words in MN Vikings subreddit (Last 6 Years)",
+      x = "Word",
+      y = "Count of Word"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+} else {
+  print("No data available for the last 6 years.")
+}
+
+
+```
+
+
+
+
+
+
+```{r}
+mn_vikes_q3 <- mn_vikes_tidy %>% 
+  count(season_start_year, word) %>% 
+  filter(season_start_year != 2011) %>% # 2011 only has one comment and is therefore not very interesting
+  bind_tf_idf(term = word,
+              document = season_start_year,
+              n=n) %>% 
+  group_by(season_start_year) %>% 
+  top_n(n=10,
+        wt = tf_idf) %>% 
+  filter(between(season_start_year, 2020, 2023))
+
+mn_vikes_q3 %>% 
+  ggplot() +
+  geom_col(aes(x = reorder(word,tf_idf),
+               y = tf_idf)) +
+  facet_wrap(~season_start_year,
+            scales = "free") +
+  labs(title="tf_idf in MN Vikings subreddit",
+       x="Word",
+       y="tf_idf") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Discussion
+
+### Clear discussion of your results. What is the answer to your initial question(s) of interest. What impact does your analysis have.
+
+# Citation
+
+Data prior to April 2023 was collected by Pushshift, data after that was
+collected by u/raiderbdev
+[here](https://www.reddit.com/user/raiderbdev). Extracted, split, and
+re-packaged by me, u/Watchful1. Hosted on
+[academictorrents.com](https://academictorrents.com).

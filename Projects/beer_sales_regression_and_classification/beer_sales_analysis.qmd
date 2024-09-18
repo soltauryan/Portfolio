@@ -1,0 +1,833 @@
+---
+title: "Beer Sales Regression and Classification"
+author: "Ryan Soltau"
+format: 
+    dashboard:
+      scrolling: true
+      theme: united
+embed-resources: true
+---
+
+
+
+```{r setup, include=FALSE,warning=FALSE}
+#include=FALSE will not include r code in output
+#warning=FALSE will remove any warnings from output
+library(tidyverse)
+library(DT) #v0.33 datatable()
+library(GGally) #v2.2.1
+library(ggcorrplot) #v0.1.4.1
+library(MASS) #v7.3-60.2 for Boston data
+library(flexdashboard) #v0.6.2
+library(plotly) #v4.10.4
+library(crosstalk) #v1.2.0
+library(knitr) #v1.45 kable(digits=)
+library(crosstalk) #v1.2.1 SharedData()
+library(tidymodels) #v1.2.0
+  #library(parsnip) #v1.2.1 linear_reg(), set_engine(), set_mode(), fit(), predict()
+  #library(yardstick) #v1.3.1 metrics(), rac_auc(), roc_curve(), metric_set(), conf_matrix()
+  #library(dplyr) #v1.1.4 %>%, select(), select_if(), filter(), mutate(), group_by(), 
+    #summarize(), tibble()
+  #library(ggplot2) #v3.5.1 ggplot()
+  #library(broom) #v1.0.6 for tidy(), augment(), glance()
+  #library(rsample) #v1.2.1 initial_split()
+library(reticulate)
+library(lubridate)
+library(scales)
+library(vip)
+library(rpart) #v4.1.23
+library(rpart.plot)
+library(NeuralNetTools)
+```
+
+```{r load_data}
+#Load the data
+df_sales_raw_r <- read_csv("BeerPurchases.csv")
+```
+
+
+```{python, include=FALSE}
+# Load data
+import pandas as pd
+df_raw = pd.read_csv("BeerPurchases.csv")
+
+df = df_raw.copy()
+df.drop(['Unnamed: 14', 'Unnamed: 15', 'Unnamed: 16',
+         'Unnamed: 17', 'Unnamed: 18'], axis=1, inplace=True)
+
+# Filter dataset for "mass" and "food" in the Channel column
+df = df[df['Channel'].isin(['mass', 'food'])]
+
+# Dates
+df['Trip Date'] = pd.to_datetime(df['Trip Date'], format='%m/%d/%y')
+df['trip_date_quarter'] = df['Trip Date'].dt.quarter
+df['trip_date_month'] = df['Trip Date'].dt.month
+
+# Create binary columns for Is Weekend and Is Weekday
+df['Is_Weekend'] = (df['Trip Date'].dt.dayofweek >= 5).astype(int)  # 5 and 6 correspond to Saturday and Sunday
+df['Is_Weekday'] = (df['Trip Date'].dt.dayofweek < 5).astype(int)
+
+seasons = {1: 'Winter', 2: 'Winter', 3: 'Spring', 4: 'Spring', 5: 'Spring',
+           6: 'Summer', 7: 'Summer', 8: 'Summer', 9: 'Fall', 10: 'Fall', 11: 'Fall', 12: 'Winter'}
+df['Season'] = df['trip_date_month'].map(seasons)
+
+# Drop nulls
+df.dropna(inplace=True)
+
+# Set to lowercase and replace spaces with _
+df = df.rename(columns=lambda x: x.strip().lower().replace(' ', '_'))
+
+# Add Columns
+df['user_trip_id'] = df['user_id'].astype(str) + "_" + df['trip_id'].astype(str)
+df['day_of_week'] = df['trip_date'].dt.day_name()
+
+# Categorizing 'Spend Per Trip'
+def categorize_spend(spend):
+    if spend < 7.58:
+        return 'Low'
+    elif spend <= 15.97:
+        return 'Medium'
+    else:
+        return 'High'
+
+df['spend_category'] = df['spend_per_trip'].apply(categorize_spend)
+
+# Create grouped columns for trips and customer datasets
+# For each customer ID, add list columns which capture specified columns
+df_agg = df.copy()
+
+trip_id_columns = ['parent_brand', 'brand', 'item_description']
+
+for column in trip_id_columns:
+    # Group and aggregate the column
+    trip_id_df = df_agg.groupby('trip_id')[column].agg(list).reset_index()
+    trip_id_df.rename(columns={column: f'{column}_by_trip_list'}, inplace=True)
+
+    # Add the columns with lists created above back to the original df
+    df_agg = df_agg.merge(trip_id_df, on='trip_id', how='left')
+
+# For each customer ID, add list columns which capture specified columns
+user_id_columns = ['trip_id', 'parent_brand', 'brand', 'item_description', 'channel',
+                   'retailer', 'banner', 'trip_date_quarter', 'trip_date_month',
+                   'is_weekend', 'is_weekday', 'season', 'user_trip_id',
+                   'day_of_week', 'trip_date']
+
+for column in user_id_columns:
+    # Group and aggregate the column
+    cust_id_df = df_agg.groupby('user_id')[column].agg(list).reset_index()
+    cust_id_df.rename(columns={column: f'{column}_by_cust_list'}, inplace=True)
+
+    # Add the columns with lists created above back to the original df
+    df_agg = df_agg.merge(cust_id_df, on='user_id', how='left')
+
+
+# Trip dataset
+trip_raw_df = df_agg.copy()
+
+trip_df = trip_raw_df.groupby('trip_id').agg(
+    user_id=('user_id', 'first'),
+    trip_date=('trip_date', 'first'),
+    channel=('channel', 'first'),
+    retailer=('retailer', 'first'),
+    banner=('banner', 'first'),
+    parent_brands_by_trip_list=('parent_brand_by_trip_list', 'first'),
+    brands_by_trip_list=('brand_by_trip_list', 'first'),
+    item_description_by_trip_list=('item_description_by_trip_list', 'first'),
+    units_total=('units_per_trip', 'sum'),
+    spend_total=('spend_per_trip', 'sum'),
+    basket_count_total=('basket_size_(units)', 'first'),
+    basket_spend_total=('basket_size_($)', 'first'),
+    day_of_week=('day_of_week', 'first'),
+    trip_date_quarter=('trip_date_quarter', 'first'),
+    trip_date_month=('trip_date_month', 'first'),
+    is_weekend=('is_weekend', 'first'),
+    is_weekday=('is_weekday', 'first'),
+    season=('season', 'first')
+).reset_index()
+
+# Customer dataset
+cust_raw_df = df_agg.copy()
+
+cust_df = cust_raw_df.groupby('user_id').agg(
+    trip_id_by_cust_list=('trip_id_by_cust_list', 'first'),
+    trip_date_by_cust_list=('trip_date_by_cust_list', 'first'),
+    channel_by_cust_list=('channel_by_cust_list', 'first'),
+    retailer_by_cust_list=('retailer_by_cust_list', 'first'),
+    banner_by_cust_list=('banner_by_cust_list', 'first'),
+    parent_brands_by_cust_list=('parent_brand_by_cust_list', 'first'),
+    brands_by_cust_list=('brand_by_cust_list', 'first'),
+    item_description_by_cust_list=('item_description_by_cust_list', 'first'),
+    units_total=('units_per_trip', 'sum'),
+    spend_total=('spend_per_trip', 'sum'),
+    basket_count_total=('basket_size_(units)', 'sum'),
+    basket_spend_total=('basket_size_($)', 'sum'),
+    day_of_week_by_cust_list=('day_of_week_by_cust_list', 'first'),
+    trip_date_quarter_by_cust_list=('trip_date_quarter_by_cust_list', 'first'),
+    trip_date_month_by_cust_list=('trip_date_month_by_cust_list', 'first'),
+    is_weekend_by_cust_list=('is_weekend_by_cust_list', 'first'),
+    is_weekday_by_cust_list=('is_weekday_by_cust_list', 'first'),
+    season_by_cust_list=('season_by_cust_list', 'first')
+).reset_index()
+
+cust_df['non_alcohol_spend'] = cust_df['basket_spend_total'] - cust_df['spend_total']
+cust_df['alcohol_spend_percent'] = round(cust_df['spend_total']/cust_df['basket_spend_total'],4)
+cust_df['non_alcohol_spend_percent'] = 1 - cust_df['alcohol_spend_percent']
+
+```
+
+```{r, include=FALSE}
+#df_example <- py$df_sales_raw_py
+# Import data back into R
+beer_sale_df <- py$df
+trip_df<- py$trip_df
+cust_df <- py$cust_df
+```
+
+```{r, include=FALSE}
+# Additional data prep
+day_levels <- c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+beer_sale_df <- beer_sale_df %>% 
+  mutate(day_of_week = factor(day_of_week, levels = day_levels, ordered = TRUE),
+         channel = factor(channel, levels = c("mass", "food")))
+
+#Rename two of the columsn with special characters
+beer_sale_df <- beer_sale_df %>% 
+  rename(basket_size_units = 'basket_size_(units)',
+         basket_side_dollars = 'basket_size_($)')
+
+# Reduce column set
+beer_sale_class <- beer_sale_df %>% 
+  select(-user_id,-trip_id,-trip_date,-retailer,-user_trip_id,-item_description,-banner,-parent_brand,-brand)
+
+beer_sale_reg <- beer_sale_df %>% 
+  select(-user_id,-trip_id,-trip_date,-retailer,-user_trip_id,-item_description,-banner,-parent_brand,-brand)
+
+# Create train and testing datasets
+set.seed(123)
+beer_sales_split <- initial_split(beer_sale_class, prop = .60)
+beer_sales_train <- rsample::training(beer_sales_split)
+beer_sales_test <- rsample::testing(beer_sales_split)
+
+beer_sales_reg_split <- initial_split(beer_sale_reg, prop = .60)
+beer_sales_reg_train <- rsample::training(beer_sales_reg_split)
+beer_sales_reg_test <- rsample::testing(beer_sales_reg_split)
+
+# Establish metrics
+# Classification
+class_metrics <- metric_set(yardstick::accuracy, yardstick::sensitivity, yardstick::specificity, yardstick::precision)
+
+# Regression
+reg_metrics <- metric_set(yardstick::rmse, yardstick::mae, yardstick::rsq)
+```
+
+
+```{r, include=FALSE}
+#DO NOT EDIT FUNCTION
+ROC_graph <- function(pred_data, truth, probs, model_desc="", df_roc = ""){
+    #This function creates a ROC Curve. It will return a df_roc with values
+    #it used to create the graph. It will also add to a previous ROC curve
+    #The inputs are the prediction table (from augment()) and the columns for the
+    #truth and probability values. There is also an optional model description
+    #and a previous df_roc dataframe. The columns need to be strings (i.e., 'sales')
+    #Capture the auc value
+    curr_auc <- pred_data %>%
+                     roc_auc(truth = {{truth}}, {{probs}}) %>%
+                     pull(.estimate)
+    #Capture the thresholds and sens/spec
+    ###First choice creates a new df_roc table
+    if (mode(df_roc) == "character") { #if it is a tibble will be "list"
+        df_roc <- pred_data %>% roc_curve(truth = {{truth}}, {{probs}}) %>% 
+                          mutate(model = paste(model_desc,round(curr_auc,2)))
+    }
+    ###Second choice is if there is already a df_roc that was input
+    else {
+    df_roc <- bind_rows(df_roc,  #use if df_roc exists with other models
+                   pred_data %>% roc_curve(truth = {{truth}}, {{probs}}) %>% 
+                      mutate(model = paste(model_desc,round(curr_auc,2))))
+    }
+    #Plot the ROC Curve(s) 
+    print(ggplot(df_roc, 
+            aes(x = 1 - specificity, y = sensitivity, 
+                group = model, col = model)) +
+            geom_path() +
+            geom_abline(lty = 3)  +
+            scale_color_brewer(palette = "Dark2") +
+            theme(legend.position = "top") )
+    #Capture the roc values in a df to add additional ROC curves
+    return(df_roc)
+}
+```
+
+
+
+```{r, include=FALSE}
+unique_counts <- beer_sale_df %>%
+  # Select only categorical variables
+  select_if(~is.factor(.) | is.character(.)) %>%
+  summarise(across(everything(), n_distinct)) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "unique_count") %>%
+  arrange(desc(unique_count))
+
+ggplot(unique_counts, aes(x = reorder(column, -unique_count), y = unique_count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Number of Unique Values per Categorical Column",
+       x = "Column",
+       y = "Number of Unique Values") +
+  scale_y_continuous(labels = comma)
+
+unique_counts <- beer_sale_df %>%
+  select(-user_trip_id,-item_description) %>% 
+  # Select only categorical variables
+  select_if(~is.factor(.) | is.character(.)) %>%
+  summarise(across(everything(), n_distinct)) %>%
+  pivot_longer(everything(), names_to = "column", values_to = "unique_count") %>%
+  arrange(desc(unique_count))
+
+ggplot(unique_counts, aes(x = reorder(column, -unique_count), y = unique_count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Number of Unique Values per Categorical Column",
+       x = "Column",
+       y = "Number of Unique Values") +
+  scale_y_continuous(labels = comma)
+```
+
+```{r, include=FALSE}
+beer_sale_df %>%
+  group_by(day_of_week) %>%
+  summarise(total_sales = sum(spend_per_trip)) %>%
+  ggplot(aes(x = day_of_week, y = total_sales, fill = day_of_week)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Total Sales by Day of Week",
+       x = "Day of Week",
+       y = "Total Sales") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+beer_sale_df %>%
+  mutate(month_name = month(as.numeric(trip_date_month), label = TRUE, abbr = FALSE)) %>%
+  group_by(month_name) %>%
+  summarise(total_sales = sum(spend_per_trip)) %>%
+  ggplot(aes(x = month_name, y = total_sales, group = 1)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Total Sales by Month",
+       x = "Month",
+       y = "Total Sales") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = comma)
+```
+
+
+```{r, include=FALSE}
+set.seed(42)
+#Define the CV folds and grid parameters
+beer_folds <- vfold_cv(beer_sales_reg_train)
+beer_grid <- dials::grid_regular(cost_complexity(),
+                                   tree_depth(range = c(2, 3)),
+                                   levels = 5)
+
+#Define Model Specifications
+tree_tune_spec <- decision_tree(cost_complexity = tune(),
+                                tree_depth = tune()) %>% 
+                                set_engine("rpart") %>% 
+                                set_mode("classification")
+
+
+
+#Define our workflow with add_model() and add_formula()
+beer_wf <- workflow() %>% 
+  add_model(tree_tune_spec) %>% 
+  add_formula(channel ~ .)
+
+
+
+#Tune on the grid of values with tune_grid()
+beer_rs <- beer_wf %>% 
+  tune_grid(resamples = beer_folds,
+            grid = beer_grid,
+            metrics=class_metrics)
+
+# Finalize the workflow using the best tree
+final_class_wf <- 
+  beer_wf %>% 
+  finalize_workflow(select_best(beer_rs, metric = "accuracy"))
+
+final_class_tree_fit <- 
+  final_class_wf %>%
+  fit(data = beer_sales_train) %>%
+  extract_fit_parsnip()
+
+pred_final_class_tree_fit <- final_class_tree_fit %>%
+  augment(beer_sales_test)
+
+pred_final_class_tree_fit %>%
+  class_metrics(truth=channel, estimate=.pred_class) %>%
+  select(-.estimator) %>%
+  kable(align = 'l', digits = 3)
+
+
+curr_metrics <- pred_final_class_tree_fit %>%
+  class_metrics(truth=channel, estimate=.pred_class)
+
+results_new<- tibble(model = 'Classification Decision Tree Tuned',
+                     accuracy = curr_metrics[[1,3]], 
+                     sensitivity = curr_metrics[[2,3]],
+                     specificity = curr_metrics[[3,3]],
+                     precision = curr_metrics[[4,3]])
+results_beer <- results_new
+results_beer %>%
+  kable(digits =2)
+
+
+df_roc <- ROC_graph(pred_final_class_tree_fit, "channel", ".pred_mass", "roc_decision_tree_forest")
+
+```
+
+
+```{r, include=FALSE}
+set.seed(42)
+
+final_class_tree_fit %>% 
+  vip()
+```
+
+
+```{r, include=FALSE}
+pred_final_class_tree_fit %>% 
+  conf_mat(truth=channel, estimate=.pred_class)
+```
+
+
+```{r, include=FALSE}
+set.seed(42)
+beer_grid <- tibble(penalty = 10^seq(-2, 5, len = 100))
+beer_folds <- vfold_cv(beer_sales_reg_train, v = 5)
+
+
+beer_lasso_spec <- linear_reg(penalty = tune(),
+                          mixture = 1) %>% 
+                        set_engine("glmnet") %>% 
+                        set_mode("regression") 
+
+#Create the workflow and tune the penalty
+beer_lasso_wf <- workflow() %>%
+                        add_model(beer_lasso_spec) %>% 
+                        add_formula(spend_per_trip ~ .)
+beer_lassotune <- beer_lasso_wf %>%
+                          tune_grid(resamples = beer_folds, 
+                                    grid = beer_grid,
+                                    metrics = reg_metrics)
+lowest_rmse_lasso <- beer_lassotune %>%
+                       select_best(metric="rmse")
+
+final_lasso <- beer_lasso_wf %>% 
+                  finalize_workflow(lowest_rmse_lasso)
+final_lasso_fit <- final_lasso %>% 
+                       fit(beer_sales_reg_train)
+
+pred_final_lasso_fit <- final_lasso_fit %>% 
+                           augment(beer_sales_reg_train)
+
+print(paste('The lowest rmse Lasso penalty is',lowest_rmse_lasso$penalty))
+```
+
+```{r, include=FALSE}
+lasso_r2 <- pred_final_lasso_fit %>% 
+  metrics(truth = spend_per_trip, estimate = .pred) %>% 
+  filter(.metric == "rsq") %>% 
+  pull(.estimate)
+
+
+curr_metrics <- pred_final_lasso_fit %>%
+  reg_metrics(truth = spend_per_trip, estimate = .pred)
+results_new <- tibble(model = 'Regression Lasso Tuned',
+                  rmse = curr_metrics[[1,3]],
+                  mae=curr_metrics[[2,3]],
+                  rsq=curr_metrics[[3,3]],
+                  r2=lasso_r2)
+
+results_beer <- bind_rows(results_beer,results_new)
+
+results_beer %>%
+  kable(digits = 3)
+```
+
+
+```{r, include=FALSE}
+set.seed(42)
+df_p <- beer_lassotune %>%
+  collect_metrics()
+p <- ggplot(df_p, aes(log(penalty), mean, color = .metric))
+p + geom_errorbar(aes(ymin = mean - 2*std_err, ymax = mean + 2*std_err),
+                  alpha = 0.5) +
+  geom_line() +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  theme(legend.position = "none")
+
+
+```
+
+```{r, include=FALSE}
+final_lasso_fit %>%
+  extract_fit_parsnip() %>% #this is similar to $fit for workflow models
+  tidy() %>%
+  kable(digits = 3)
+```
+
+
+```{r, include=FALSE}
+#Define the Model Specification
+svc_spec <- svm_poly() %>% 
+              set_engine("kernlab", type = "C-svc", kernel = "vanilladot") %>% 
+              set_mode("classification")
+
+# Subset training data to reduce training time
+nrow(beer_sales_train)
+
+beer_sales_train_svc = beer_sales_train[1:10000,]
+
+nrow(beer_sales_train_svc)
+
+#Define our workflow
+svc_fit <- svc_spec %>% 
+            fit(channel ~ ., data = beer_sales_train_svc)
+
+pred_svc <- svc_fit %>% 
+               augment(beer_sales_test) 
+pred_svc %>%
+       conf_mat(truth=channel,estimate=.pred_class)
+
+curr_metrics <- pred_svc %>%
+                  class_metrics(truth = channel, estimate = .pred_class)
+
+results_new<- tibble(model = 'Classification Support Vector',
+                     accuracy = curr_metrics[[1,3]], 
+                     sensitivity = curr_metrics[[2,3]],
+                     specificity = curr_metrics[[3,3]],
+                     precision = curr_metrics[[4,3]])
+results_beer <- bind_rows(results_beer,results_new)
+results_beer %>%
+  kable(digits =2)
+
+
+
+```
+
+
+```{r, include=FALSE}
+beer_mlp_spec <- mlp(hidden_units = 10, 
+                      penalty = 0.01, 
+                      epochs = 500) %>% 
+                  set_engine("nnet") %>% 
+                  set_mode("regression")
+
+beer_nn <- beer_mlp_spec %>% 
+                  fit(spend_per_trip ~ ., data = beer_sales_train)
+beer_nn
+
+pred_beer_nn <- beer_nn %>%
+                    augment(beer_sales_test) 
+
+
+head(pred_beer_nn)
+
+beer_nn_r2 <- pred_beer_nn %>% 
+  metrics(truth = spend_per_trip, estimate = .pred) %>% 
+  filter(.metric == "rsq") %>% 
+  pull(.estimate)
+
+
+
+
+curr_metrics <- pred_beer_nn %>%
+        reg_metrics(truth = spend_per_trip, estimate = .pred)
+
+results_new<- tibble(model = ' Regression Neural Network',
+                  rmse = curr_metrics[[1,3]],
+                  mae=curr_metrics[[2,3]],
+                  rsq=curr_metrics[[3,3]],
+                  r2=beer_nn_r2)
+
+results_beer <- bind_rows(results_beer, results_new)
+results_beer %>%
+  kable(beer =2)
+
+vip(beer_nn, 
+    aesthetics = list(fill = "#6e0000", col = "black"))
+
+plotnet(beer_nn$fit)
+
+```
+
+
+```{r, include=FALSE}
+regression_tibble <- results_beer %>%
+  filter(grepl("Regression", model)) %>%
+  select_if(~!all(is.na(.)))
+
+regression_table
+
+classification_tibble <- results_beer %>%
+  filter(grepl("Classification", model)) %>%
+  select_if(~!all(is.na(.)))
+
+classification_tibble
+```
+
+```{r, include=FALSE}
+final_lasso_fit %>% 
+  vip()
+
+
+```
+
+
+
+
+# Executive Summary
+This presentation focuses on predicting two variables in our Beer Sales data: Channel and Spend Per Trip. 
+
+For our Channel predictions, we've built Decision Tree and Support Vector models with an accuracy of ~0.6. This seems good at first, but we're having difficulties getting the model to predict cases where the channel is equal to "food" (i.e., Grocery Stores). We believe continued development of these models will rectify this issue.
+
+For our Spend Per Trip predictions, we've built Lasso and Neural Network models. Both models have an R squared of 0.8 and 0.85 respectively, which shows the models are doing a good job of predicting the our customer's spend based on the attributes of their trip. 
+
+```{r}
+results_beer %>%
+  arrange(model) %>% 
+  kable(digits =2)
+```
+
+
+
+# Problem Description
+## Row
+::: {.card title="The Project"}
+**The Problem Description**
+
+This project is focused on a beer sales dataset that captures detailed customer transactions, specifically focusing on beer purchases from October 2013 to October 2014. My primary goal is to develop models that effectively identify patterns within these transactions.  
+
+For the categorical variable I want to predict, I am going with "channel", which indicates where the food was purchased. I am filtering this to two channels, "food" (i.e., grocery stores) and "mass" (i.e., Walmart, Target, Costco).
+
+For the continuous variable, I'm trying to predict the "spend_per_trip". This indicates how much the customer spent in total on their trip to the store.
+
+:::
+
+
+
+
+
+
+# The Data
+## Row
+### Column {width=50%}
+::: {.card title="Data Shape" fill="false"}
+The raw dataset has 184,973 rows and 12 columns, there are two ID columns which will not be used for my models. 
+:::
+
+
+::: {.card title="Data Transformations" fill="false"}
+The categorical columns all have a high cardinality so I filtered the two largest sales channels, food and mass. This resulted in a dataset with 149,718 rows and 12 columns
+
+The initial dataset contains multiple rows if a customer bought more than 1 type of item on their trip. Due to this, I created two datasets to capture information about trips and customers. 
+:::
+
+
+::: {.card title="Data Source" fill="false"} 
+DU MSBA Alumni Andrew Brooks
+:::
+
+### Column {width=50%}
+::: {.card title="Variable Descriptions"}
+**TO PREDICT WITH**  
+* **Trip Date**: The date of the User’s trip.  
+* **Retailer**: The name of the venue where the sale takes place (e.g., Walmart, Kroger, and Safeway).  
+* **Banner**: The sub-category of Retailer, if there’s a subtype available.  
+* **Parent Brand**: Name of the parent company that is selling the beer (e.g., Bud Light, Miller, and Coors).  
+* **Brand**: Name of the brand of beer that is being sold.  
+* **Item Description**: The type of item that is being sold, like a 12 or 24 pack.  
+* **Units Per Trip**: How many of the item were bought.  
+* **Spend Per Unit**: How much money was spent per unit that was bought.  
+* **Basket Size (Units)**: How many items were in the User’s basket on that trip.  
+* **Basket Size ($)**: The monetary value of the User’s basket on the trip  
+
+**WE WANT TO PREDICT**  
+* **Channel**: The type of venue where the trip takes place (e.g., Bodega, Fast Food, Drug Store).  
+* **Spend Per Trip**: How much money was spent on the trip on Beer.  
+:::
+
+## Row
+::: {.card title="Preview of the data"}
+```{r}
+head(beer_sales_train) %>% 
+  kable(digits = 2)
+```
+:::
+
+
+
+
+
+
+# Categorical Response Prediction
+## Row
+```{r}
+classification_tibble %>%
+  kable(digits = 3)
+```
+
+## Row
+### Column {width=50%}
+::: {.card title="Decision Tree Model" fill="false"}
+In this decision tree model, we're trying to determine which of the two largest channels a consumer purchased their beer at. An accuracy of 0.6 reflects some positive initial results of this model's performance, but looking at the sensitivity it's doing a poor job of predicting when a row was at a "mass" channel. A sensitivity of 	0.976 tells me that it's doing really well at the "food" channel, but it also tells me the model is just picking "food" for most rows. For next steps, I'd say we could look at increasing the importance of the "mass" prediction in our model training.
+```{r}
+pred_final_class_tree_fit %>%
+  class_metrics(truth=channel, estimate=.pred_class) %>%
+  select(-.estimator) %>%
+  kable(align = 'l', digits = 3)
+```
+
+```{r}
+final_class_tree_fit %>% 
+  vip()
+```
+
+```{r}
+pred_final_class_tree_fit %>% 
+  conf_mat(truth=channel, estimate=.pred_class)
+```
+:::
+
+### Column {width=50%}
+::: {.card title="Support Vector Classifier" fill="false"}
+The performance between this Support Vector Classifier and the Decision Tree model are remarkably similar, with a slight loss in precision for the SVC model. 
+
+The story here is much the same to the Decision Tree model, the sensitivity here is very low. Again, this warrants a deeper dive into what may be causing this issue, as you can see from the confusion matrix, the class imbalance is not too strong. The next steps here is to try a model with a 50/50 split of mass and food to see the results.
+```{r}
+pred_svc %>%
+  class_metrics(truth=channel, estimate=.pred_class) %>%
+  select(-.estimator) %>%
+  kable(align = 'l', digits = 3)
+```
+
+```{r}
+pred_svc %>% 
+  conf_mat(truth=channel, estimate=.pred_class)
+```
+
+
+:::
+
+
+
+
+
+
+
+
+# Continuous Response Prediction
+## Row
+```{r}
+regression_tibble %>%
+  kable(digits = 3)
+```
+## Row
+### Column {width=50%}
+::: {.card title="Lasso Model" fill="false"}
+In this model we're trying to predict the total spent on a trip by a customer using a Lasso model. 
+
+```{r}
+final_lasso_fit %>% 
+  vip()
+```
+```{r}
+set.seed(42)
+df_p <- beer_lassotune %>%
+  collect_metrics()
+p <- ggplot(df_p, aes(log(penalty), mean, color = .metric))
+p + geom_errorbar(aes(ymin = mean - 2*std_err, ymax = mean + 2*std_err),
+                  alpha = 0.5) +
+  geom_line() +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  theme(legend.position = "none")
+```
+
+```{r}
+final_lasso_fit %>%
+  extract_fit_parsnip() %>% #this is similar to $fit for workflow models
+  tidy() %>%
+  kable(digits = 3)
+```
+
+:::
+
+### Column {width=50%}
+::: {.card title="Neural Network" fill="false"}
+This model is more experimental for me. Here I am using a MLP model to test how well the model can predict the Spend Per Trip, tt does a surprisingly good job. This simple model with no tuning outperforms the tuned Lasso model in this task. My best guess is that it has picked up on the spend category variable and associates it with a spend range.
+```{r}
+vip(beer_nn, 
+    aesthetics = list(fill = "#6e0000", col = "black"))
+
+plotnet(beer_nn$fit)
+
+
+```
+
+
+
+::: 
+
+
+
+
+# Conclusion
+## Row
+### Column {width=50%}
+::: {.card title="Model Output" fill="false"}
+**Classification Models**
+Both models suffer greatly in the sensitivity measure. This indicates that these models are struggling to classify the "mass" channels, while most cases just predicting "food", thus the high specificity.
+
+**Regression Models**
+Both models perform similarly, but I would lean towards using the Decision Tree model for it's slightly superior performance 
+
+```{r}
+results_beer %>%
+  arrange(model) %>% 
+  kable(digits =2)
+```
+
+```{r}
+
+```
+
+
+:::
+
+### Column {width=50%}
+::: {.card title="ROC Curves" fill="false"}
+```{r}
+df_roc <- ROC_graph(pred_svc, "channel", ".pred_mass", "roc_support_vector", df_roc)
+```
+
+
+
+:::
+
+
+## Row
+::: {.card title="Conclusion"}
+Our Spend Per Trip models are doing a good job of predicting our customers Spend Per Trip, both with r squared values above 0.80. I would recommend continuing to explore these models and try to understand which predictors have the greatest impact on the model's predictions.
+
+Our Channel models present a greater challenge. There is a slight class imbalance, but our model's specificity (predicting "food") is very low, usually around or below 0.05. This means the models are primarily just predicting that the Channel is equal to "mass" in the vast majority of cases. For next steps, I would exactly split the training dataset 50/50 for mass and food and see the results. Alternatively, you could look at methods for increasing the importance of the "food" predictions and see if the model adjusts.
+
+:::
+
+
+# Reflection
+I am most proud of the work I did to integrate my old Python code into this project. I see this as laying the groundwork for incorporating R in my future Python projects. Working through this class, I really like a lot of R's features and syntax and I could see myself working with R in a project for data prep and exploration.
+
+If given another week, I would spend the time on refining the four predictive models in this report. I certainly felt a lot of crunch with the capstone going on at the same time as well as my full-time job.
