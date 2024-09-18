@@ -403,8 +403,9 @@ def main():
         response = chat.send_message(user_input, ship_status, nearby_ships, event_info)
         print(f"AI: {response}")
 
-        if event_info:
-            print(f"\nEvent occurred:\n{event_info}")
+        # Uncomment to see event info 
+        # if event_info:
+        #     print(f"\nEvent occurred:\n{event_info}")
         
         # Uncomment the following line for debugging the event probability
         # print(f"Debug: Current event probability: {event_system.current_probability:.4f}")
