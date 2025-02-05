@@ -1,6 +1,6 @@
 ## 👋 Hi there! I'm Ryan Soltau
 
-As an aspiring Data Scientist, I thrive on transforming complex data into meaningful insights that drive business decisions. Recently completed my MS in Business Analytics, I combine analytical expertise, programming proficiency, and a passion for data-driven solutions to uncover actionable insights from data.
+I thrive on transforming complex data into meaningful insights that drive business decisions. Recently completed my MS in Business Analytics, I combine analytical expertise, programming proficiency, and a passion for data-driven solutions to uncover actionable insights from data.
 
 With a blend of technical skills and a business-oriented mindset, I aim to bridge the gap between raw data and impactful decision-making.
 
